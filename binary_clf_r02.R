@@ -1,0 +1,157 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	cache = TRUE
+)
+```
+library(readr)
+#install.packages("party")
+library(ISLR)
+library(ggplot2)
+library(caret)
+library(party)
+train<-read_csv("D:/2020/R/train.csv",col_names=FALSE)
+Y<-read_csv("D:/2020/R/train-target.csv",col_names=FALSE, col_types = cols(X1 = col_factor()))
+View(train)
+names(Y)<-"Y"
+test<-read_csv("D:/2020/R/test.csv",col_names=FALSE)
+train<-cbind(train,Y)
+inTrain<-createDataPartition(train$Y,p=0.95,list=FALSE)
+training<-train[inTrain,]
+testing<-train[-inTrain,]
+
+
+library(dplyr)
+violin_pair <- function(column) {
+  print(ggplot(testing, aes(x=Y, y=testing[,column]))+   geom_violin() + ylab(column))
+}
+for (i in names(testing)[1:30]){
+  violin_pair(i)
+}
+library(ggplot2)
+library(GGally)
+ggpairs(training[,c(1:10,31)])
+library("Hmisc")
+res2 <- rcorr(as.matrix(testing))
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+View(flattenCorrMatrix(res2$r, res2$P))
+library(corrplot)
+res <- cor(as.matrix(cbind(testing[,1:30],as.numeric(testing[,31]))))
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+corrplot(res2$r, type="upper", order="hclust", 
+         p.mat = res2$P, sig.level = 0.01, insig = "blank")
+library(AppliedPredictiveModeling)
+transparentTheme(trans = .4)
+plotSubset <- data.frame(scale(training[, c("X2", "X16")])) 
+xyplot(X2 ~ X16,
+       data = plotSubset,
+       groups = training$Y, 
+       auto.key = list(columns = 2))  
+transformed <- spatialSign(plotSubset)
+transformed <- as.data.frame(transformed)
+xyplot(X2 ~ X16, 
+       data = transformed, 
+       groups = training$Y, 
+       auto.key = list(columns = 2)) 
+```
+```{r preprocessing}
+pp <- preProcess(training[,-10], 
+                     method="pca", pcaComp=15)
+pp
+transformed <- predict(pp, newdata = training[,-10])
+head(transformed)
+ggpairs(transformed[,1:10])
+```
+
+
+# ensemble
+```{r}
+library(party)
+require(randomForest)
+library(ada)
+mod1 <- train(Y ~(.)^2, method ="glm", data = transformed)
+mod2 <- train(Y~(.)^2, method ="rf", data = transformed, trControl = trainControl(method = "cv"),number = 10)
+mod3 <- train(Y~(.)^2, method ="rpart", data = transformed)
+mod4 <- train(Y~(.)^2, method ="ctree", data = transformed)
+# mod4 <- train(Y~., method ="ctree", data = training[,-10])
+mod5 <- ada(Y~(.)^2,data=transformed,iter=1000,nu=1,type="discrete")
+```
+
+### compare them
+```{r dependson=c(-1)}
+transform_testing  <- predict(pp, newdata = testing[,-10])
+pred1 <- predict(mod1, transform_testing)
+pred2 <- predict(mod2, transform_testing)
+pred3 <- predict(mod3, transform_testing)
+pred4 <- predict(mod4, transform_testing)
+pred5 <- predict(mod5, transform_testing)
+MLmetrics::Accuracy(pred5,transform_testing$Y)
+confusionMatrix(pred1,transform_testing$Y)
+confusionMatrix(pred2,testing$Y)
+confusionMatrix(pred3,testing$Y)
+confusionMatrix(pred4,testing$Y)
+confusionMatrix(pred5,testing$Y)
+library(rattle)
+fancyRpartPlot(mod3$finalModel)
+plot(mod4$finalModel)
+plot(mod1$finalModel)
+varplot(mod5)
+```
+
+
+```{r}
+predDF4 <- data.frame(pred1, pred2, pred3, pred4, pred5, Y = testing$Y)
+combModFit4 <- train(Y~., method = "gam", data = predDF4)
+combPred4 <- predict(combModFit4,predDF4)
+```
+
+```{r}
+MLmetrics::Accuracy(y_pred = pred1,y_true = testing$Y)
+MLmetrics::Accuracy(y_pred = pred2,y_true = testing$Y)
+MLmetrics::Accuracy(y_pred = pred3,y_true = testing$Y)
+MLmetrics::Accuracy(y_pred = pred4,y_true = testing$Y)
+MLmetrics::Accuracy(y_pred = pred5,y_true = testing$Y)
+MLmetrics::Accuracy(y_pred = combPred4,y_true = testing$Y)
+plot(combModFit4)
+```
+
+```{r}
+trans_test  <- predict(pp, newdata = test[,-10])
+pred1V <- predict(mod1, trans_test)
+pred2V <- predict(mod2, trans_test)
+pred3V <- predict(mod3, trans_test)
+pred4V <- predict(mod4, trans_test)
+pred5V <- predict(mod4, trans_test)
+predVDF4 <-
+    data.frame(
+        pred1 = pred1V,
+        pred2 = pred2V,
+        pred3 = pred3V,
+        pred4 = pred4V,
+        pred5 = pred5V
+    )
+combPredV5 <- predict(combModFit4,predVDF4,type="prob")
+# View(combPredV5)
+rfresults <- predict(mod2, trans_test,type="prob")
+ctreeresults <- predict(mod4, trans_test,type="prob")
+ada_res <- predict(mod1, trans_test,type="prob" )
+View(ada_res)
+```
+
+## export
+```{r}
+export <- combPredV5[,1]
+write.table(export, file = "results.csv",row.names = FALSE, dec = ".", sep = ",", col.names = F)
+export <- ada_res[,2]
+write.table(export, file = "ada_results.csv",row.names = FALSE, dec = ".", sep = ",", col.names = F)
+```
+
+
